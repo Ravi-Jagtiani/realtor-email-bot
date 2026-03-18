@@ -39,7 +39,7 @@ EMAIL_TEMPLATE = """Hi {sender_name},
 
 Thank you for your enquiry regarding our {property_type} listings.
 
-Click here {listing_url} for all my {property_type} listings across CA.
+<a href="{listing_url}">Click here</a> for all my {property_type} listings across CA.
 Below each listing you will find their respect NDA links to sign and access “Due Diligence” including financials. 
 
 To setup a tour or to know more about any of the listings please call me on 669.226.7416.
@@ -151,7 +151,7 @@ def send_reply(to_email: str, sender_name: str, subject: str, listing: dict) -> 
     msg["From"]    = EMAIL_ADDRESS
     msg["To"]      = to_email
     msg["Subject"] = f"Re: {subject}" if not subject.lower().startswith("re:") else subject
-    msg.attach(MIMEText(body, "plain"))
+    msg.attach(MIMEText(body, "html"))
 
     try:
         with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
@@ -208,7 +208,7 @@ def save_to_sent(subject: str, to_email: str, body: str):
         msg["To"]      = to_email
         msg["Subject"] = subject
         msg["Date"]    = datetime.now().strftime("%a, %d %b %Y %H:%M:%S +0000")
-        msg.attach(MIMEText(body, "plain"))
+        msg.attach(MIMEText(body, "html"))
 
         mail = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
         mail.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
@@ -272,6 +272,7 @@ def main():
 
         if not is_inquiry(subject, body):
             log.info("  Not an enquiry, skipping.")
+            mail.store(eid, '+FLAGS', '\\Seen')
             skipped += 1
             continue
 
@@ -280,10 +281,12 @@ def main():
         if listing:
             log.info(f"  Matched type: {listing['property_type']}")
             if send_reply(addr, name, subject, listing):
+                mail.store(eid, '+FLAGS', '\\Seen')
                 replied += 1
         else:
             log.info("  No type matched — sending fallback reply.")
             if send_fallback_reply(addr, name, subject):
+                mail.store(eid, '+FLAGS', '\\Seen')
                 replied += 1
 
     mail.logout()
