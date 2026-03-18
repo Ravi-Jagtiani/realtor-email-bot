@@ -84,8 +84,8 @@ def scrape_crexi_listings() -> list[dict]:
                 "Chrome/120.0.0.0 Safari/537.36"
             ))
             log.info(f"Scraping Crexi profile: {CREXI_PROFILE_URL}")
-            page.goto(CREXI_PROFILE_URL, wait_until="networkidle", timeout=30000)
-            page.wait_for_timeout(3000)
+            page.goto(CREXI_PROFILE_URL, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(5000)
 
             # Grab all links pointing to /properties/ pages
             cards = page.query_selector_all("a[href*='/properties/']")
