@@ -16,27 +16,25 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4.2.2
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5.4.0
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: |
-          pip install playwright
-          playwright install chromium
-          playwright install-deps chromium
+        run: pip install gspread google-auth
 
       - name: Run bot
         env:
-          EMAIL_ADDRESS:     ${{ secrets.EMAIL_ADDRESS }}
-          EMAIL_PASSWORD:    ${{ secrets.EMAIL_PASSWORD }}
-          IMAP_SERVER:       ${{ secrets.IMAP_SERVER }}
-          SMTP_SERVER:       ${{ secrets.SMTP_SERVER }}
-          AGENT_NAME:        ${{ secrets.AGENT_NAME }}
-          AGENT_EMAIL:       ${{ secrets.AGENT_EMAIL }}
-          BROKERAGE_NAME:    ${{ secrets.BROKERAGE_NAME }}
-          CREXI_PROFILE_URL: ${{ secrets.CREXI_PROFILE_URL }}
+          EMAIL_ADDRESS:      ${{ secrets.EMAIL_ADDRESS }}
+          EMAIL_PASSWORD:     ${{ secrets.EMAIL_PASSWORD }}
+          IMAP_SERVER:        ${{ secrets.IMAP_SERVER }}
+          SMTP_SERVER:        ${{ secrets.SMTP_SERVER }}
+          AGENT_NAME:         ${{ secrets.AGENT_NAME }}
+          AGENT_EMAIL:        ${{ secrets.AGENT_EMAIL }}
+          BROKERAGE_NAME:     ${{ secrets.BROKERAGE_NAME }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          SHEET_NAME:         ${{ secrets.SHEET_NAME }}
         run: python bot.py
