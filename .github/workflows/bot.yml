@@ -1,0 +1,42 @@
+name: Realtor Email Bot
+
+on:
+  schedule:
+    # Runs every day at 8:00 AM UTC (adjust to realtor's timezone)
+    # 8:00 AM UTC = 3:00 AM EST / 12:00 AM PST
+    # Change the hour to suit — e.g. '0 13 * * *' = 8 AM EST
+    - cron: '0 13 * * *'
+
+  # Also allows manual trigger from GitHub Actions tab (useful for testing)
+  workflow_dispatch:
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install playwright
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Run bot
+        env:
+          EMAIL_ADDRESS:     ${{ secrets.EMAIL_ADDRESS }}
+          EMAIL_PASSWORD:    ${{ secrets.EMAIL_PASSWORD }}
+          IMAP_SERVER:       ${{ secrets.IMAP_SERVER }}
+          SMTP_SERVER:       ${{ secrets.SMTP_SERVER }}
+          AGENT_NAME:        ${{ secrets.AGENT_NAME }}
+          AGENT_EMAIL:       ${{ secrets.AGENT_EMAIL }}
+          BROKERAGE_NAME:    ${{ secrets.BROKERAGE_NAME }}
+          CREXI_PROFILE_URL: ${{ secrets.CREXI_PROFILE_URL }}
+        run: python bot.py
