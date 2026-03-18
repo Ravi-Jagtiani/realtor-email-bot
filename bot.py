@@ -156,6 +156,7 @@ def send_reply(to_email: str, sender_name: str, subject: str, listing: dict) -> 
         with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
             server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
             server.send_message(msg)
+        save_to_sent(msg["Subject"], to_email, body)
         log.info(f"✓ Reply sent to {to_email} — {listing['property_type']}")
         return True
     except Exception as e:
@@ -191,11 +192,42 @@ Best regards,
         with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
             server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
             server.send_message(msg)
+        save_to_sent(msg["Subject"], to_email, body)
         log.info(f"✓ Fallback reply sent to {to_email}")
         return True
     except Exception as e:
         log.error(f"Fallback send failed: {e}")
         return False
+
+def save_to_sent(subject: str, to_email: str, body: str):
+    """Save a copy of the sent email to the Sent folder via IMAP."""
+    try:
+        msg = MIMEMultipart()
+        msg["From"]    = EMAIL_ADDRESS
+        msg["To"]      = to_email
+        msg["Subject"] = subject
+        msg["Date"]    = datetime.now().strftime("%a, %d %b %Y %H:%M:%S +0000")
+        msg.attach(MIMEText(body, "plain"))
+
+        mail = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
+        mail.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+
+        # Try common Sent folder names
+        for folder in ["Sent", "Sent Items", "INBOX.Sent", "[Gmail]/Sent Mail"]:
+            try:
+                mail.append(
+                    folder, "\\Seen",
+                    imaplib.Time2Internaldate(time.time()),
+                    msg.as_bytes()
+                )
+                log.info(f"Saved to {folder} folder.")
+                break
+            except Exception:
+                continue
+
+        mail.logout()
+    except Exception as e:
+        log.error(f"Could not save to Sent folder: {e}")
 
 
 # ── MAIN (runs once and exits) ────────────────────────────────────────────────
