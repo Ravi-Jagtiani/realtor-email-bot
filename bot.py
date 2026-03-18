@@ -87,6 +87,13 @@ def scrape_crexi_listings() -> list[dict]:
             page.goto(CREXI_PROFILE_URL, wait_until="domcontentloaded", timeout=60000)
             page.wait_for_timeout(5000)
 
+            # Debug — log all hrefs found on page so we can find the right selector
+            all_links = page.query_selector_all("a[href]")
+            hrefs = [a.get_attribute("href") for a in all_links if a.get_attribute("href")]
+            log.info(f"All hrefs found on page ({len(hrefs)} total):")
+            for h in hrefs[:50]:  # first 50 to avoid log flood
+                log.info(f"  {h}")
+
             # Grab all links pointing to /properties/ pages
             cards = page.query_selector_all("a[href*='/properties/']")
             seen  = set()
