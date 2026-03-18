@@ -1,17 +1,6 @@
-"""
-Realtor Email Auto-Reply Bot
-────────────────────────────
-Designed to run once and exit (for GitHub Actions / cron scheduling).
-- Scrapes the realtor's Crexi profile for live listings
-- Checks inbox for unread property inquiry emails
-- Matches inquiry to listing, fills template, sends reply
-- Logs everything to replies.log
-"""
-
 import imaplib
 import smtplib
 import email
-import re
 import os
 import logging
 from datetime import datetime
@@ -19,20 +8,19 @@ from email.header import decode_header
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-# ── CONFIG — all values come from environment variables (GitHub Secrets) ──────
-IMAP_SERVER       = os.environ.get("IMAP_SERVER",   "imap.mail.yahoo.com")
-IMAP_PORT         = int(os.environ.get("IMAP_PORT", "993"))
-SMTP_SERVER       = os.environ.get("SMTP_SERVER",   "smtp.mail.yahoo.com")
-SMTP_PORT         = int(os.environ.get("SMTP_PORT", "465"))
-EMAIL_ADDRESS     = os.environ.get("EMAIL_ADDRESS",  "")
-EMAIL_PASSWORD    = os.environ.get("EMAIL_PASSWORD", "")
-CREXI_PROFILE_URL = os.environ.get("CREXI_PROFILE_URL", "https://www.crexi.com/profile/ravi-jagtiani-ravijag")
-AGENT_NAME        = os.environ.get("AGENT_NAME",    "Ravi Jagtiani")
-AGENT_EMAIL       = os.environ.get("AGENT_EMAIL",   "")
-BROKERAGE_NAME    = os.environ.get("BROKERAGE_NAME","")
+# ── CONFIG ────────────────────────────────────────────────────────────────────
+IMAP_SERVER    = os.environ.get("IMAP_SERVER",    "imap.mail.yahoo.com")
+IMAP_PORT      = int(os.environ.get("IMAP_PORT",  "993"))
+SMTP_SERVER    = os.environ.get("SMTP_SERVER",    "smtp.mail.yahoo.com")
+SMTP_PORT      = int(os.environ.get("SMTP_PORT",  "465"))
+EMAIL_ADDRESS  = os.environ.get("EMAIL_ADDRESS",  "")
+EMAIL_PASSWORD = os.environ.get("EMAIL_PASSWORD", "")
+AGENT_NAME     = os.environ.get("AGENT_NAME",     "Ravi Jagtiani")
+AGENT_EMAIL    = os.environ.get("AGENT_EMAIL",    "")
+BROKERAGE_NAME = os.environ.get("BROKERAGE_NAME", "")
 # ─────────────────────────────────────────────────────────────────────────────
 
-# ── KEYWORDS that flag an email as a property inquiry ────────────────────────
+# ── INQUIRY KEYWORDS ──────────────────────────────────────────────────────────
 INQUIRY_KEYWORDS = [
     "interested in", "inquiry", "enquiry", "open house",
     "listing", "property", "schedule a tour", "more info",
@@ -42,22 +30,21 @@ INQUIRY_KEYWORDS = [
 ]
 # ─────────────────────────────────────────────────────────────────────────────
 
-# ── EMAIL REPLY TEMPLATE ──────────────────────────────────────────────────────
-# Replace this entire block with the real template when available.
-# Placeholders: {sender_name}, {property_address}, {listing_url},
-#               {agent_name}, {agent_email}, {brokerage_name}
+# ── EMAIL TEMPLATE ────────────────────────────────────────────────────────────
+# Replace with Ravi's actual template when received.
+# Placeholders: {sender_name}, {property_type}, {listing_url},
+#               {contact_name}, {contact_email}, {brokerage_name}
 EMAIL_TEMPLATE = """Hi {sender_name},
 
-Thank you for reaching out! We received your inquiry about {property_address}.
+Thank you for your enquiry regarding our {property_type} listings.
 
-You can view the full listing details here:
-{listing_url}
+Click here {listing_url} for all my {property_type} listings across CA.
+Below each listing you will find their respect NDA links to sign and access “Due Diligence” including financials. 
 
-{agent_name} is handling this property and will be in touch with you shortly.
-In the meantime, feel free to reach them directly at {agent_email}.
+To setup a tour or to know more about any of the listings please call me on 669.226.7416.
 
 Best regards,
-{agent_name}
+{contact_name}
 {brokerage_name}
 """
 # ─────────────────────────────────────────────────────────────────────────────
@@ -69,89 +56,35 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
-# ── CREXI SCRAPER ─────────────────────────────────────────────────────────────
-def scrape_crexi_listings() -> list[dict]:
-    """Scrape the realtor's active listings from their Crexi profile page."""
+# ── GOOGLE SHEETS ─────────────────────────────────────────────────────────────
+def get_listings() -> list[dict]:
+    """
+    Load property types from Google Sheet.
+    Columns: property_type, keywords, listing_url, contact_name, contact_email
+    """
     try:
-        from playwright.sync_api import sync_playwright
+        import json
+        import gspread
+        from google.oauth2.service_account import Credentials
 
-        listings = []
-        with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=True,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                ]
-            )
-            context = browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/122.0.0.0 Safari/537.36"
-                ),
-                viewport={"width": 1280, "height": 800},
-                locale="en-US",
-                timezone_id="America/New_York",
-            )
-            # Remove headless detection flags
-            context.add_init_script("""
-                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-                Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3]});
-                Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
-            """)
-            page = context.new_page()
-            log.info(f"Scraping Crexi profile: {CREXI_PROFILE_URL}")
-            page.goto(CREXI_PROFILE_URL, wait_until="domcontentloaded", timeout=60000)
-            page.wait_for_timeout(5000)
+        creds_json = os.environ.get("GOOGLE_CREDENTIALS", "")
+        sheet_name = os.environ.get("SHEET_NAME", "Realtor Listings")
 
-            # Debug — log all hrefs found on page so we can find the right selector
-            all_links = page.query_selector_all("a[href]")
-            hrefs = [a.get_attribute("href") for a in all_links if a.get_attribute("href")]
-            log.info(f"All hrefs found on page ({len(hrefs)} total):")
-            for h in hrefs[:50]:  # first 50 to avoid log flood
-                log.info(f"  {h}")
-
-            # Grab all links pointing to /properties/ pages
-            cards = page.query_selector_all("a[href*='/properties/']")
-            seen  = set()
-
-            for card in cards:
-                try:
-                    href = card.get_attribute("href") or ""
-                    if not href or href in seen:
-                        continue
-                    seen.add(href)
-
-                    full_url = (
-                        f"https://www.crexi.com{href}"
-                        if href.startswith("/") else href
-                    )
-                    text  = card.inner_text().strip()
-                    lines = [l.strip() for l in text.split("\n") if l.strip()]
-                    address = (
-                        lines[0] if lines
-                        else href.split("/")[-1].replace("-", " ").title()
-                    )
-
-                    listings.append({
-                        "property_address": address,
-                        "agent_name":       AGENT_NAME,
-                        "agent_email":      AGENT_EMAIL or EMAIL_ADDRESS,
-                        "listing_url":      full_url
-                    })
-                except Exception:
-                    continue
-
-            context.close()
-            browser.close()
-
-        log.info(f"Found {len(listings)} listing(s) on Crexi.")
-        return listings
+        creds = Credentials.from_service_account_info(
+            json.loads(creds_json),
+            scopes=[
+                "https://www.googleapis.com/auth/spreadsheets.readonly",
+                "https://www.googleapis.com/auth/drive.readonly"
+            ]
+        )
+        client  = gspread.authorize(creds)
+        sheet   = client.open(sheet_name).sheet1
+        records = sheet.get_all_records()
+        log.info(f"Loaded {len(records)} property type(s) from Google Sheet.")
+        return records
 
     except Exception as e:
-        log.error(f"Crexi scrape error: {e}")
+        log.error(f"Google Sheets error: {e}")
         return []
 
 
@@ -186,30 +119,32 @@ def is_inquiry(subject: str, body: str) -> bool:
     return any(kw in text for kw in INQUIRY_KEYWORDS)
 
 
-# ── LISTING MATCH ─────────────────────────────────────────────────────────────
-def match_listing(subject: str, body: str, listings: list[dict]):
-    text       = (subject + " " + body).lower()
-    best, best_score = None, 0
+# ── PROPERTY TYPE MATCHING ────────────────────────────────────────────────────
+def match_property_type(subject: str, body: str, listings: list[dict]):
+    """
+    Match email to a property type by checking keywords column.
+    Falls back to first row (general) if nothing matches.
+    """
+    text = (subject + " " + body).lower()
 
     for listing in listings:
-        words = [w for w in re.split(r"[\s,]+", listing["property_address"].lower()) if len(w) > 2]
-        score = sum(1 for w in words if w in text)
-        if score > best_score:
-            best_score = score
-            best       = listing
+        keywords = [k.strip().lower() for k in listing.get("keywords", "").split(",")]
+        if any(kw in text for kw in keywords if kw):
+            return listing
 
-    return best if best_score >= 2 else None
+    # No match — return None, bot will send fallback reply
+    return None
 
 
 # ── SEND REPLY ────────────────────────────────────────────────────────────────
 def send_reply(to_email: str, sender_name: str, subject: str, listing: dict) -> bool:
     body = EMAIL_TEMPLATE.format(
-        sender_name      = sender_name or "there",
-        property_address = listing["property_address"],
-        listing_url      = listing["listing_url"],
-        agent_name       = listing["agent_name"],
-        agent_email      = listing["agent_email"],
-        brokerage_name   = BROKERAGE_NAME
+        sender_name   = sender_name or "there",
+        property_type = listing["property_type"],
+        listing_url   = listing["listing_url"],
+        contact_name  = listing["contact_name"],
+        contact_email = listing["contact_email"],
+        brokerage_name= BROKERAGE_NAME
     )
     msg = MIMEMultipart()
     msg["From"]    = EMAIL_ADDRESS
@@ -221,10 +156,45 @@ def send_reply(to_email: str, sender_name: str, subject: str, listing: dict) -> 
         with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
             server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
             server.send_message(msg)
-        log.info(f"✓ Reply sent to {to_email} — {listing['property_address']}")
+        log.info(f"✓ Reply sent to {to_email} — {listing['property_type']}")
         return True
     except Exception as e:
         log.error(f"Send failed: {e}")
+        return False
+
+
+def send_fallback_reply(to_email: str, sender_name: str, subject: str) -> bool:
+    """
+    Send a generic reply when no property type is matched.
+    Directs enquirer to Ravi's general Crexi profile.
+    """
+    body = f"""Hi {sender_name or 'there'},
+
+Thank you for your enquiry. We'd love to help you find the right property.
+
+You can browse all of our available listings here:
+https://www.crexi.com/profile/ravi-jagtiani-ravijag
+
+{AGENT_NAME} will be in touch with you shortly. You can also reach them directly at {AGENT_EMAIL}.
+
+Best regards,
+{AGENT_NAME}
+{BROKERAGE_NAME}
+"""
+    msg = MIMEMultipart()
+    msg["From"]    = EMAIL_ADDRESS
+    msg["To"]      = to_email
+    msg["Subject"] = f"Re: {subject}" if not subject.lower().startswith("re:") else subject
+    msg.attach(MIMEText(body, "plain"))
+
+    try:
+        with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
+            server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+            server.send_message(msg)
+        log.info(f"✓ Fallback reply sent to {to_email}")
+        return True
+    except Exception as e:
+        log.error(f"Fallback send failed: {e}")
         return False
 
 
@@ -234,10 +204,10 @@ def main():
     log.info(f"Bot run started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     log.info("=" * 50)
 
-    # 1. Get listings from Crexi
-    listings = scrape_crexi_listings()
+    # 1. Load property types from Google Sheet
+    listings = get_listings()
     if not listings:
-        log.warning("No listings found — cannot match inquiries. Exiting.")
+        log.warning("No listings loaded — cannot match enquiries. Exiting.")
         return
 
     # 2. Connect to inbox
@@ -260,27 +230,28 @@ def main():
         _, msg_data = mail.fetch(eid, "(RFC822)")
         msg         = email.message_from_bytes(msg_data[0][1])
 
-        subject     = decode_str(msg.get("Subject", ""))
-        raw_from    = decode_str(msg.get("From",    ""))
-        body        = get_body(msg)
-        name, addr  = parse_sender(raw_from)
+        subject    = decode_str(msg.get("Subject", ""))
+        raw_from   = decode_str(msg.get("From",    ""))
+        body       = get_body(msg)
+        name, addr = parse_sender(raw_from)
 
         log.info(f"→ '{subject}' from {addr}")
 
         if not is_inquiry(subject, body):
-            log.info("  Not an inquiry, skipping.")
+            log.info("  Not an enquiry, skipping.")
             skipped += 1
             continue
 
-        listing = match_listing(subject, body, listings)
-        if not listing:
-            log.info("  No listing match found, skipping.")
-            skipped += 1
-            continue
+        listing = match_property_type(subject, body, listings)
 
-        log.info(f"  Matched: {listing['property_address']}")
-        if send_reply(addr, name, subject, listing):
-            replied += 1
+        if listing:
+            log.info(f"  Matched type: {listing['property_type']}")
+            if send_reply(addr, name, subject, listing):
+                replied += 1
+        else:
+            log.info("  No type matched — sending fallback reply.")
+            if send_fallback_reply(addr, name, subject):
+                replied += 1
 
     mail.logout()
 
