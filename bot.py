@@ -144,6 +144,7 @@ def scrape_crexi_listings() -> list[dict]:
                 except Exception:
                     continue
 
+            context.close()
             browser.close()
 
         log.info(f"Found {len(listings)} listing(s) on Crexi.")
