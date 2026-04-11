@@ -91,7 +91,7 @@ FALLBACK_TEMPLATE = """\
 SIGNATURE_HTML = """\
 <table cellpadding="0" cellspacing="0" border="0" style="font-family: Arial, sans-serif; font-size: 13px; color: #222; line-height: 1.7;">
   <tr><td style="padding-bottom:14px;">
-    <img src="cid:signature" width="600" alt="Ravi Jagtiani - Jagtiani Group"
+    <<img src="https://raw.githubusercontent.com/ShreyaJ3147/realtor-email-bot/main/signature.png" width="600" alt="Ravi Jagtiani - Jagtiani Group" style="display:block; max-width:100%;"/>"
          style="display:block; max-width:100%;"/>
   </td></tr>
   <tr><td>
