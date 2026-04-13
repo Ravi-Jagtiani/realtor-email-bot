@@ -2,12 +2,13 @@
 Realtor Email Auto-Reply Bot
 ────────────────────────────
 Runs once and exits (GitHub Actions cron).
-- Loads property types from Google Sheet
-- Reads unread enquiry emails
-- Extracts the actual enquirer's email from the form email body
-- Sends HTML reply with signature to enquirer, CC's the listing contact
-- Marks each email as read after processing so it never replies twice
-- Saves a copy to Sent folder
+- Loads property types + team members from Google Sheet
+- Handles both direct emails and form submission emails
+- Extracts enquirer contact from form body, falls back to sender for direct emails
+- Sends HTML reply with signature image (hosted on GitHub)
+- CC's the relevant team member
+- Marks emails as read to prevent duplicate replies
+- Saves copy to Sent folder
 """
 
 import imaplib
@@ -22,7 +23,6 @@ from datetime import datetime
 from email.header import decode_header
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from email.mime.image import MIMEImage
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 IMAP_SERVER    = os.environ.get("IMAP_SERVER",    "imap.mail.yahoo.com")
@@ -33,7 +33,11 @@ EMAIL_ADDRESS  = os.environ.get("EMAIL_ADDRESS",  "")
 EMAIL_PASSWORD = os.environ.get("EMAIL_PASSWORD", "")
 AGENT_NAME     = os.environ.get("AGENT_NAME",     "Ravi Jagtiani")
 AGENT_EMAIL    = os.environ.get("AGENT_EMAIL",    "")
-BROKERAGE_NAME = os.environ.get("BROKERAGE_NAME", "")
+AGENT_PHONE    = os.environ.get("AGENT_PHONE",    "669.226.7416")
+BROKERAGE_NAME = os.environ.get("BROKERAGE_NAME", "Jagtiani Group")
+# Hosted signature image — update GITHUB_USER to your GitHub username
+GITHUB_USER    = os.environ.get("GITHUB_USER",    "")
+SIGNATURE_URL  = f"https://raw.githubusercontent.com/ShreyaJ3147/realtor-email-bot/main/signature.png"
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── INQUIRY KEYWORDS ──────────────────────────────────────────────────────────
@@ -47,79 +51,148 @@ INQUIRY_KEYWORDS = [
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── TEMPLATES ─────────────────────────────────────────────────────────────────
+# Placeholders:
+# {sender_name}, {property_type}, {listing_url}, {region},
+# {team_name}, {team_phone}, {agent_name}, {agent_phone}, {signature_url}
+
 EMAIL_TEMPLATE = """\
 <html>
-<body style="font-family: Arial, sans-serif; font-size: 14px; color: #222; line-height: 1.6; max-width: 700px; margin: 0; padding: 20px;">
+<body style="font-family: Arial, sans-serif; font-size: 14px; color: #222222;
+             line-height: 1.7; max-width: 680px; margin: 0; padding: 20px;">
 
   <p>Hi {sender_name},</p>
 
-  <p>Thank you for your enquiry regarding our <strong>{property_type}</strong> listings.</p>
+  <p>Here is a link to all the
+  <a href="{listing_url}">{property_type} listings</a>.</p>
 
-  <p>You can <a href="{listing_url}">click here</a> to view all available {property_type} properties.</p>
+  <p>The link above includes the {region} location. Below each listing you will
+  find the respective NDA links to sign and access due diligence.</p>
 
-  <p>{contact_name} will be in touch with you shortly to discuss your requirements.<br>
-  You can also reach them directly at <a href="mailto:{contact_email}">{contact_email}</a>.</p>
+  <p>You can call me to know more about the business:
+  <a href="tel:{agent_phone_digits}">{agent_phone}</a></p>
+
+  <p>To set up a tour, please call my team member
+  <strong>{team_name}</strong>:
+  <a href="tel:{team_phone_digits}">{team_phone}</a></p>
+
+  <p>Thanks,<br>
+  {agent_name}</p>
 
   <br>
   <hr style="border: none; border-top: 1px solid #cccccc; margin: 24px 0;">
-  {signature}
+
+  <table cellpadding="0" cellspacing="0" border="0"
+         style="font-family: Arial, sans-serif; font-size: 13px;
+                color: #222222; line-height: 1.7;">
+    <tr><td style="padding-bottom: 14px;">
+      <img src="{signature_url}" width="600"
+           alt="Ravi Jagtiani - Jagtiani Group"
+           style="display: block; max-width: 100%;"/>
+    </td></tr>
+    <tr><td>
+      <strong>Ravi R Jagtiani | Jagtiani Group | Managing Director</strong><br>
+      <strong>Cal DRE# 02044082 - Realtor&reg; | President's Circle |
+      America's Top 1% Real Estate Professional |
+      Voted the Best Commercial Realtor in San Mateo County</strong>
+    </td></tr>
+    <tr><td style="padding-top: 10px;">
+      mobile: <a href="tel:6692267416" style="color: #222222;">669.226.7416</a><br>
+      email: <a href="mailto:ravi@jagtianigroup.com"
+                style="color: #1a73e8;">ravi@jagtianigroup.com</a><br>
+      web: <a href="https://www.JagtianiGroup.com/commercial"
+              style="color: #1a73e8;">www.JagtianiGroup.com/commercial</a>
+    </td></tr>
+    <tr><td style="padding-top: 10px; color: #555555; font-style: italic;">
+      In the business of wealth creation
+    </td></tr>
+    <tr><td style="padding-top: 10px;">
+      <a href="https://www.linkedin.com/in/ravijagtiani"
+         style="color: #1a73e8;">Linkedin</a> &nbsp;|&nbsp;
+      <a href="https://www.facebook.com/JagtianiGroup"
+         style="color: #1a73e8;">Facebook Business Page</a> &nbsp;|&nbsp;
+      <a href="https://www.youtube.com/@jagtianigroup"
+         style="color: #1a73e8;">Youtube</a> &nbsp;|&nbsp;
+      <a href="https://www.zillow.com/profile/ravijag"
+         style="color: #1a73e8;">My Reviews</a> &nbsp;|&nbsp;
+      <a href="https://blog.jagtianigroup.com"
+         style="color: #1a73e8;">My blog</a>
+    </td></tr>
+    <tr><td style="padding-top: 12px; font-size: 12px; color: #777777;">
+      Intero has been voted the &lsquo;Best Real Estate Company&rsquo; in the
+      East Bay and Silicon Valley by the Bay Area News Group for
+      2016, 2017, &amp; 2018!
+    </td></tr>
+  </table>
 
 </body>
 </html>"""
+
 
 FALLBACK_TEMPLATE = """\
 <html>
-<body style="font-family: Arial, sans-serif; font-size: 14px; color: #222; line-height: 1.6; max-width: 700px; margin: 0; padding: 20px;">
+<body style="font-family: Arial, sans-serif; font-size: 14px; color: #222222;
+             line-height: 1.7; max-width: 680px; margin: 0; padding: 20px;">
 
   <p>Hi {sender_name},</p>
 
-  <p>Thank you for your enquiry. We would love to help you find the right property.</p>
+  <p>Thank you for your enquiry. Please find all our available listings here:<br>
+  <a href="https://www.crexi.com/profile/ravi-jagtiani-ravijag">
+  View all listings</a></p>
 
-  <p>You can <a href="https://www.crexi.com/profile/ravi-jagtiani-ravijag">click here</a>
-  to browse all of our available listings.</p>
+  <p>You can call me to know more:
+  <a href="tel:{agent_phone_digits}">{agent_phone}</a></p>
 
-  <p>{contact_name} will be in touch with you shortly.<br>
-  You can also reach them directly at <a href="mailto:{contact_email}">{contact_email}</a>.</p>
+  <p>Thanks,<br>
+  {agent_name}</p>
 
   <br>
   <hr style="border: none; border-top: 1px solid #cccccc; margin: 24px 0;">
-  {signature}
+
+  <table cellpadding="0" cellspacing="0" border="0"
+         style="font-family: Arial, sans-serif; font-size: 13px;
+                color: #222222; line-height: 1.7;">
+    <tr><td style="padding-bottom: 14px;">
+      <img src="{signature_url}" width="600"
+           alt="Ravi Jagtiani - Jagtiani Group"
+           style="display: block; max-width: 100%;"/>
+    </td></tr>
+    <tr><td>
+      <strong>Ravi R Jagtiani | Jagtiani Group | Managing Director</strong><br>
+      <strong>Cal DRE# 02044082 - Realtor&reg; | President's Circle |
+      America's Top 1% Real Estate Professional |
+      Voted the Best Commercial Realtor in San Mateo County</strong>
+    </td></tr>
+    <tr><td style="padding-top: 10px;">
+      mobile: <a href="tel:6692267416" style="color: #222222;">669.226.7416</a><br>
+      email: <a href="mailto:ravi@jagtianigroup.com"
+                style="color: #1a73e8;">ravi@jagtianigroup.com</a><br>
+      web: <a href="https://www.JagtianiGroup.com/commercial"
+              style="color: #1a73e8;">www.JagtianiGroup.com/commercial</a>
+    </td></tr>
+    <tr><td style="padding-top: 10px; color: #555555; font-style: italic;">
+      In the business of wealth creation
+    </td></tr>
+    <tr><td style="padding-top: 10px;">
+      <a href="https://www.linkedin.com/in/ravijagtiani"
+         style="color: #1a73e8;">Linkedin</a> &nbsp;|&nbsp;
+      <a href="https://www.facebook.com/JagtianiGroup"
+         style="color: #1a73e8;">Facebook Business Page</a> &nbsp;|&nbsp;
+      <a href="https://www.youtube.com/@jagtianigroup"
+         style="color: #1a73e8;">Youtube</a> &nbsp;|&nbsp;
+      <a href="https://www.zillow.com/profile/ravijag"
+         style="color: #1a73e8;">My Reviews</a> &nbsp;|&nbsp;
+      <a href="https://blog.jagtianigroup.com"
+         style="color: #1a73e8;">My blog</a>
+    </td></tr>
+    <tr><td style="padding-top: 12px; font-size: 12px; color: #777777;">
+      Intero has been voted the &lsquo;Best Real Estate Company&rsquo; in the
+      East Bay and Silicon Valley by the Bay Area News Group for
+      2016, 2017, &amp; 2018!
+    </td></tr>
+  </table>
 
 </body>
 </html>"""
-
-SIGNATURE_HTML = """\
-<table cellpadding="0" cellspacing="0" border="0" style="font-family: Arial, sans-serif; font-size: 13px; color: #222; line-height: 1.7;">
-  <tr><td style="padding-bottom:14px;">
-    <<img src="https://raw.githubusercontent.com/ShreyaJ3147/realtor-email-bot/main/signature.png" width="600" alt="Ravi Jagtiani - Jagtiani Group" style="display:block; max-width:100%;"/>"
-         style="display:block; max-width:100%;"/>
-  </td></tr>
-  <tr><td>
-    <strong>Ravi R Jagtiani | Jagtiani Group | Managing Director</strong><br>
-    <strong>Cal DRE# 02044082 - Realtor&reg; | President's Circle |
-    America's Top 1% Real Estate Professional |
-    Voted the Best Commercial Realtor in San Mateo County</strong>
-  </td></tr>
-  <tr><td style="padding-top:10px;">
-    mobile: <a href="tel:6692267416" style="color:#222;">669.226.7416</a><br>
-    email: <a href="mailto:ravi@jagtianigroup.com" style="color:#1a73e8;">ravi@jagtianigroup.com</a><br>
-    web: <a href="https://www.JagtianiGroup.com/commercial" style="color:#1a73e8;">www.JagtianiGroup.com/commercial</a>
-  </td></tr>
-  <tr><td style="padding-top:10px; color:#555; font-style:italic;">
-    In the business of wealth creation
-  </td></tr>
-  <tr><td style="padding-top:10px;">
-    <a href="https://www.linkedin.com/in/ravijagtiani" style="color:#1a73e8;">Linkedin</a> &nbsp;|&nbsp;
-    <a href="https://www.facebook.com/JagtianiGroup" style="color:#1a73e8;">Facebook Business Page</a> &nbsp;|&nbsp;
-    <a href="https://www.youtube.com/@jagtianigroup" style="color:#1a73e8;">Youtube</a> &nbsp;|&nbsp;
-    <a href="https://www.zillow.com/profile/ravijag" style="color:#1a73e8;">My Reviews</a> &nbsp;|&nbsp;
-    <a href="https://blog.jagtianigroup.com" style="color:#1a73e8;">My blog</a>
-  </td></tr>
-  <tr><td style="padding-top:12px; font-size:12px; color:#777;">
-    Intero has been voted the &lsquo;Best Real Estate Company&rsquo; in the East Bay
-    and Silicon Valley by the Bay Area News Group for 2016, 2017, &amp; 2018!
-  </td></tr>
-</table>"""
 # ─────────────────────────────────────────────────────────────────────────────
 
 logging.basicConfig(
@@ -131,6 +204,12 @@ log = logging.getLogger(__name__)
 
 # ── GOOGLE SHEETS ─────────────────────────────────────────────────────────────
 def get_listings() -> list[dict]:
+    """
+    Load property types from Google Sheet.
+    Required columns:
+      property_type, keywords, listing_url, region,
+      team_name, team_phone, team_email
+    """
     try:
         import gspread
         from google.oauth2.service_account import Credentials
@@ -148,7 +227,7 @@ def get_listings() -> list[dict]:
         client  = gspread.authorize(creds)
         sheet   = client.open(sheet_name).sheet1
         records = sheet.get_all_records()
-        log.info(f"Loaded {len(records)} property type(s) from Google Sheet.")
+        log.info(f"Loaded {len(records)} listing row(s) from Google Sheet.")
         return records
     except Exception as e:
         log.error(f"Google Sheets error: {e}")
@@ -181,14 +260,19 @@ def parse_sender(raw: str):
     return "", raw.strip()
 
 
+def digits_only(phone: str) -> str:
+    """Strip non-digit chars for use in tel: links."""
+    return re.sub(r"\D", "", phone)
+
+
 def extract_enquirer_email(body: str) -> str:
     """
-    Extract the actual enquirer email from a form submission body.
-    Tries labelled patterns first (Email: x@x.com), then any email in body.
-    Skips Ravi's own email address.
+    Extract enquirer email from form body.
+    Tries labelled patterns first, then any email that isn't Ravi's.
     """
     labelled = re.search(
-        r'(?:email|e-mail|reply.?to|contact)[^\n:]*[:\s]+([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})',
+        r'(?:email|e-mail|reply.?to|contact)[^\n:]*[:\s]+'
+        r'([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})',
         body, re.IGNORECASE
     )
     if labelled:
@@ -207,12 +291,16 @@ def extract_enquirer_email(body: str) -> str:
 def extract_enquirer_name(body: str) -> str:
     """Extract enquirer name from common form field patterns."""
     match = re.search(
-        r'(?:full name|name|first name)[^\n:]*[:\s]+([A-Za-z][A-Za-z\s\-]{1,40})',
+        r'(?:full name|name|first name)[^\n:]*[:\s]+'
+        r'([A-Za-z][A-Za-z\s\-]{1,40})',
         body, re.IGNORECASE
     )
     if match:
         name = match.group(1).strip()
-        name = re.split(r'\n|last name|email|phone|message', name, flags=re.IGNORECASE)[0].strip()
+        name = re.split(
+            r'\n|last name|email|phone|message',
+            name, flags=re.IGNORECASE
+        )[0].strip()
         return name
     return ""
 
@@ -223,44 +311,70 @@ def is_inquiry(subject: str, body: str) -> bool:
     return any(kw in text for kw in INQUIRY_KEYWORDS)
 
 
-# ── PROPERTY TYPE MATCHING ────────────────────────────────────────────────────
-def match_property_type(subject: str, body: str, listings: list[dict]):
+# ── PROPERTY TYPE + REGION MATCHING ──────────────────────────────────────────
+def match_listing(subject: str, body: str, listings: list[dict]):
+    """
+    Two-stage matching:
+    1. Filter rows where property type keywords match the email
+    2. Among those, find the row whose region cities appear in the email
+    3. If no city match, fall back to the last matching row (Ravi fallback)
+
+    Returns (listing_row, matched_city) where matched_city is the exact
+    city name extracted from the email to use in the reply, or the full
+    region string if no specific city was detected.
+    """
     text = (subject + " " + body).lower()
+
+    # Stage 1 — collect all rows that match the property type keywords
+    type_matches = []
     for listing in listings:
         keywords = [k.strip().lower() for k in listing.get("keywords", "").split(",")]
         if any(kw in text for kw in keywords if kw):
-            return listing
-    return None
+            type_matches.append(listing)
+
+    if not type_matches:
+        return None, ""
+
+    # Stage 2 — scan region column of each matched row for city names
+    for listing in type_matches:
+        region_str = listing.get("region", "")
+        cities = [c.strip() for c in region_str.split(",") if c.strip()]
+        for city in cities:
+            if city.lower() in text:
+                log.info(f"  Region match: {city} → {listing.get('team_name')}")
+                return listing, city  # return exact city for use in reply
+
+    # Stage 3 — no city found, use last type match (should be Ravi fallback row)
+    fallback = type_matches[-1]
+    return fallback, fallback.get("region", "your area")
 
 
 # ── EMAIL BUILDER ─────────────────────────────────────────────────────────────
-def build_email_msg(to_email: str, cc_email: str, subject: str, html_body: str) -> MIMEMultipart:
-    msg = MIMEMultipart("related")
+def build_email_msg(
+    to_email: str,
+    cc_email: str,
+    subject: str,
+    html_body: str
+) -> MIMEMultipart:
+    # Always CC Ravi + the relevant team member
+    # De-duplicate in case team member IS Ravi
+    cc_addresses = list({a for a in [AGENT_EMAIL, cc_email] if a})
+    cc_str = ", ".join(cc_addresses)
+
+    msg = MIMEMultipart("alternative")
     msg["From"]    = EMAIL_ADDRESS
     msg["To"]      = to_email
-    if cc_email:
-        msg["Cc"]  = cc_email
+    msg["Cc"]      = cc_str
     msg["Subject"] = subject
-
-    alt = MIMEMultipart("alternative")
-    alt.attach(MIMEText(html_body, "html", "utf-8"))
-    msg.attach(alt)
-
-    try:
-        with open("signature.png", "rb") as f:
-            img = MIMEImage(f.read(), _subtype="png")
-            img.add_header("Content-ID", "<signature>")
-            img.add_header("Content-Disposition", "inline", filename="signature.png")
-            msg.attach(img)
-    except Exception as e:
-        log.warning(f"Signature image not found: {e}")
-
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
     return msg
 
 
 # ── SEND + SAVE ───────────────────────────────────────────────────────────────
 def send_message(msg: MIMEMultipart, to_email: str, cc_email: str) -> bool:
-    recipients = [to_email] + ([cc_email] if cc_email else [])
+    # Recipients = To + all CC addresses (Ravi always included)
+    cc_list = [a.strip() for a in msg.get("Cc", "").split(",") if a.strip()]
+    recipients = list({to_email} | set(cc_list))
     try:
         with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
             server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
@@ -321,14 +435,14 @@ def main():
         _, msg_data = mail.fetch(eid, "(RFC822)")
         msg         = email.message_from_bytes(msg_data[0][1])
 
-        subject  = decode_str(msg.get("Subject", ""))
-        raw_from = decode_str(msg.get("From", ""))
-        body     = get_body(msg)
-        name , form_sender = parse_sender(raw_from)
+        subject    = decode_str(msg.get("Subject", ""))
+        raw_from   = decode_str(msg.get("From", ""))
+        body       = get_body(msg)
+        name, form_sender = parse_sender(raw_from)
 
         log.info(f"→ '{subject}' from {form_sender}")
 
-        # Mark as read immediately — prevents any double processing
+        # Mark as read immediately — prevents double processing
         mail.store(eid, '+FLAGS', '\\Seen')
 
         if not is_inquiry(subject, body):
@@ -336,8 +450,7 @@ def main():
             skipped += 1
             continue
 
-        # Extract actual enquirer contact from form body
-        # Falls back to the direct sender if no email found in body
+        # Form email → extract from body | Direct email → use sender
         enquirer_email = extract_enquirer_email(body) or form_sender
         enquirer_name  = extract_enquirer_name(body) or name or "there"
 
@@ -348,28 +461,37 @@ def main():
 
         log.info(f"  Enquirer: {enquirer_name} <{enquirer_email}>")
 
-        listing    = match_property_type(subject, body, listings)
-        cc_email   = listing["contact_email"] if listing else AGENT_EMAIL
-        reply_subj = f"Re: {subject}" if not subject.lower().startswith("re:") else subject
+        listing, matched_city = match_listing(subject, body, listings)
+        reply_subj = (
+            f"Re: {subject}"
+            if not subject.lower().startswith("re:") else subject
+        )
 
         if listing:
-            log.info(f"  Matched type: {listing['property_type']}")
+            log.info(f"  Matched: {listing['property_type']} — {matched_city} → {listing.get('team_name')}")
+            cc_email  = listing.get("team_email", AGENT_EMAIL)
             html_body = EMAIL_TEMPLATE.format(
-                sender_name   = enquirer_name,
-                property_type = listing["property_type"],
-                listing_url   = listing["listing_url"],
-                contact_name  = listing["contact_name"],
-                contact_email = listing["contact_email"],
-                brokerage_name= BROKERAGE_NAME,
-                signature     = SIGNATURE_HTML
+                sender_name       = enquirer_name,
+                property_type     = listing["property_type"],
+                listing_url       = listing["listing_url"],
+                region            = matched_city,
+                team_name         = listing.get("team_name", AGENT_NAME),
+                team_phone        = listing.get("team_phone", AGENT_PHONE),
+                team_phone_digits = digits_only(listing.get("team_phone", AGENT_PHONE)),
+                agent_name        = AGENT_NAME,
+                agent_phone       = AGENT_PHONE,
+                agent_phone_digits= digits_only(AGENT_PHONE),
+                signature_url     = SIGNATURE_URL
             )
         else:
             log.info("  No type matched — sending fallback.")
+            cc_email  = AGENT_EMAIL
             html_body = FALLBACK_TEMPLATE.format(
-                sender_name   = enquirer_name,
-                contact_name  = AGENT_NAME,
-                contact_email = AGENT_EMAIL,
-                signature     = SIGNATURE_HTML
+                sender_name       = enquirer_name,
+                agent_name        = AGENT_NAME,
+                agent_phone       = AGENT_PHONE,
+                agent_phone_digits= digits_only(AGENT_PHONE),
+                signature_url     = SIGNATURE_URL
             )
 
         out_msg = build_email_msg(enquirer_email, cc_email, reply_subj, html_body)
