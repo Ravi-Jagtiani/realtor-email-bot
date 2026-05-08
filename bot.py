@@ -4,9 +4,9 @@ Realtor Email Auto-Reply Bot
 Runs once and exits (GitHub Actions cron).
 - Loads property types + team members from Google Sheet
 - Handles both direct emails and form submission emails
-- Extracts enquirer contact from form body, falls back to sender for direct emails
+- Extracts enquirer contact from Crexi, BizBuySell, LoopNet and direct emails
 - Sends HTML reply with signature image (hosted on GitHub)
-- CC's the relevant team member
+- CC's the relevant team member + Ravi always
 - Marks emails as read to prevent duplicate replies
 - Saves copy to Sent folder
 """
@@ -51,10 +51,6 @@ INQUIRY_KEYWORDS = [
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── TEMPLATES ─────────────────────────────────────────────────────────────────
-# Placeholders:
-# {sender_name}, {property_type}, {listing_url}, {region},
-# {team_name}, {team_phone}, {agent_name}, {agent_phone}, {signature_url}
-
 EMAIL_TEMPLATE = """\
 <html>
 <body style="font-family: Arial, sans-serif; font-size: 14px; color: #222222;
@@ -267,9 +263,46 @@ def digits_only(phone: str) -> str:
 
 def extract_enquirer_email(body: str) -> str:
     """
-    Extract enquirer email from form body.
-    Tries labelled patterns first, then any email that isn't Ravi's.
+    Handles all known notification formats + direct emails:
+    1. LoopNet   — 'From: Name | phone | email | Listing ID'
+    2. BizBuySell — 'Contact Email:' label then email on next line
+    3. Crexi CA  — standalone email on its own line
+    4. Same-line label — 'Email: address@email.com'
+    5. Any email in body as last resort fallback
     """
+    lines = [l.strip() for l in body.splitlines()]
+
+    # Format 1 — LoopNet: "From: Name | phone | email | ..."
+    loopnet = re.search(
+        r'From:\s+[^|]+\|[^|]+\|\s*([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})',
+        body, re.IGNORECASE
+    )
+    if loopnet:
+        return loopnet.group(1).strip()
+
+    # Format 2 — BizBuySell: "Contact Email:" on one line, email on the next
+    for i, line in enumerate(lines):
+        if re.search(r'contact\s*email', line, re.IGNORECASE):
+            for next_line in lines[i+1:]:
+                if next_line:
+                    match = re.match(
+                        r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$',
+                        next_line
+                    )
+                    if match:
+                        return next_line
+                    break
+
+    # Format 3 — Crexi CA: standalone email on its own line
+    for line in lines:
+        match = re.match(
+            r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$',
+            line
+        )
+        if match and line.lower() != EMAIL_ADDRESS.lower():
+            return line
+
+    # Format 4 — same-line label fallback
     labelled = re.search(
         r'(?:email|e-mail|reply.?to|contact)[^\n:]*[:\s]+'
         r'([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})',
@@ -278,6 +311,7 @@ def extract_enquirer_email(body: str) -> str:
     if labelled:
         return labelled.group(1).strip()
 
+    # Format 5 — any email in body, skip Ravi's own
     all_emails = re.findall(
         r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}',
         body
@@ -285,11 +319,45 @@ def extract_enquirer_email(body: str) -> str:
     for addr in all_emails:
         if addr.lower() != EMAIL_ADDRESS.lower():
             return addr
+
     return ""
 
 
 def extract_enquirer_name(body: str) -> str:
-    """Extract enquirer name from common form field patterns."""
+    """
+    Handles all known notification formats:
+    1. LoopNet   — 'From: Javier Feliciano | ...'
+    2. BizBuySell — 'Contact Name:' then name on next line
+    3. Crexi CA  — 'Harsh Garg has executed/requested...'
+    4. Generic label fallback
+    """
+    lines = [l.strip() for l in body.splitlines()]
+
+    # Format 1 — LoopNet: "From: Name | ..."
+    loopnet = re.search(
+        r'From:\s+([A-Z][a-zA-Z\s\-]{2,40}?)\s*\|',
+        body, re.IGNORECASE
+    )
+    if loopnet:
+        return loopnet.group(1).strip()
+
+    # Format 2 — BizBuySell: "Contact Name:" on one line, name on the next
+    for i, line in enumerate(lines):
+        if re.search(r'contact\s*name', line, re.IGNORECASE):
+            for next_line in lines[i+1:]:
+                if next_line:
+                    return next_line.strip()
+            break
+
+    # Format 3 — Crexi CA: "Name has executed/requested..."
+    match = re.search(
+        r'^([A-Z][a-zA-Z\s\-]{2,40}?)\s+has\s+(?:executed|requested|submitted)',
+        body, re.MULTILINE
+    )
+    if match:
+        return match.group(1).strip()
+
+    # Format 4 — generic label fallback
     match = re.search(
         r'(?:full name|name|first name)[^\n:]*[:\s]+'
         r'([A-Za-z][A-Za-z\s\-]{1,40})',
@@ -302,6 +370,7 @@ def extract_enquirer_name(body: str) -> str:
             name, flags=re.IGNORECASE
         )[0].strip()
         return name
+
     return ""
 
 
@@ -450,9 +519,31 @@ def main():
             skipped += 1
             continue
 
-        # Form email → extract from body | Direct email → use sender
-        enquirer_email = extract_enquirer_email(body) or form_sender
-        enquirer_name  = extract_enquirer_name(body) or name or "there"
+        # Known platform notification senders — never reply to these
+        BLOCKED_SENDERS = [
+            "support@crexi.com",
+            "noreply@crexi.com",
+            "notifications@crexi.com",
+            "support@bizbuysell.com",
+            "noreply@bizbuysell.com",
+            "leads@bizbuysell.com",
+            "support@loopnet.com",
+            "noreply@loopnet.com",
+            "leads@loopnet.com",
+            "donotreply@loopnet.com",
+        ]
+
+        # Extract real enquirer from body, do NOT fall back to blocked senders
+        enquirer_email = extract_enquirer_email(body)
+        if not enquirer_email:
+            if form_sender.lower() in [b.lower() for b in BLOCKED_SENDERS]:
+                log.warning(f"  Could not extract enquirer email and sender is a platform notification ({form_sender}) — skipping to avoid account ban.")
+                skipped += 1
+                continue
+            # Safe to use sender directly (genuine direct email)
+            enquirer_email = form_sender
+
+        enquirer_name = extract_enquirer_name(body) or name or "there"
 
         if not enquirer_email:
             log.warning("  No enquirer email found — skipping.")
